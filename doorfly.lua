@@ -254,11 +254,22 @@ local function getCharacterParts()
 end
 
 local function getTargetPlayer()
-	local exact = Players:FindFirstChild(targetName)
+    local targetLower = targetName:lower()
 
-	if exact then
-		return exact
-	end
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            -- Buscamos tanto en el Nombre de Usuario como en el Nombre de Pantalla
+            local username = player.Name:lower()
+            local displayName = player.DisplayName:lower()
+            
+            if username == targetLower or displayName == targetLower then
+                return player
+            end
+        end
+    end
+
+    return nil
+end
 
 	local wanted = targetName:lower()
 
