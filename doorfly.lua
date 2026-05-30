@@ -910,4 +910,291 @@ end
 ----------------------------------------------------
 -- RESPAWN
 ----------------------------------------------------
-runtime:AddConnection(LocalPlayer.CharacterRemoving:Conne
+runtime:AddConnection(LocalPlayer.CharacterRemoving:Connect(function()
+	resetSession("character_removing")
+end))
+
+runtime:AddConnection(LocalPlayer.CharacterAdded:Connect(function(newChar)
+	resetSession("character_added")
+
+	task.defer(function()
+		local root = newChar:WaitForChild("HumanoidRootPart", 12)
+
+		if runtime.Alive and root then
+			task.wait(0.35)
+			cleanupRootObjects(root)
+		end
+	end)
+end))
+
+runtime:AddConnection(getWorkspace().DescendantAdded:Connect(function(obj)
+	if runtime.Alive and isUsableDoorPart(obj) then
+		table.insert(runtime.Doors, obj)
+	end
+end))
+
+----------------------------------------------------
+-- STOP
+----------------------------------------------------
+function runtime:Destroy(reason)
+	if not self.Alive then
+		return
+	end
+
+	self.Alive = false
+
+	for _, connection in ipairs(self.Connections) do
+		pcall(function()
+			connection:Disconnect()
+		end)
+	end
+
+	table.clear(self.Connections)
+
+	local _, _, root = getCharacterParts()
+
+	if root then
+		cleanupRootObjects(root)
+	end
+
+	if self.ActiveGyro then
+		pcall(function()
+			self.ActiveGyro:Destroy()
+		end)
+
+		self.ActiveGyro = nil
+	end
+
+	if ENV[RUN_KEY] == self then
+		ENV[RUN_KEY] = nil
+	end
+
+	log("Detenido:", reason or "manual")
+end
+
+ENV.__SUPER_DOOR_FLY_STOP = function()
+	if ENV[RUN_KEY] and ENV[RUN_KEY].Destroy then
+		ENV[RUN_KEY]:Destroy("manual_stop")
+	end
+
+	ENV.__SUPER_DOOR_FLY_STOP = nil
+end
+
+----------------------------------------------------
+-- MAIN LOOP
+----------------------------------------------------
+runtime:AddConnection(RunService.Heartbeat:Connect(function(dt)
+	if not runtime.Alive then
+		return
+	end
+
+	local myChar, humanoid, myRoot = getCharacterParts()
+
+	if not myChar or not humanoid or not myRoot then
+		statusLog("Esperando personaje/root...")
+		return
+	end
+
+	local targetRoot, targetChar = getTargetRoot()
+
+	if not targetRoot then
+		statusLog("Esperando objetivo:", targetName)
+		applyVelocity(myRoot, ZERO, dt, false)
+		return
+	end
+
+	local params = makeRayParams(myChar, targetChar)
+	local gyro = createGyro(myRoot)
+
+	clearBadHumanoidStates(humanoid, myRoot)
+	cacheDoors(false)
+
+	local now = os.clock()
+
+	local targetPosition = targetRoot.Position
+		+ Vector3.new(0, alturaVuelo, 0)
+		+ targetRoot.AssemblyLinearVelocity * 0.14
+
+	if runtime.State == "CHECK" then
+		local shouldExit = shouldSearchDoor(myRoot.Position, targetPosition, now, params)
+
+		statusLog(
+			"Estado:", runtime.State,
+			"Target OK",
+			"Puertas:", #runtime.Doors,
+			"Buscar puerta:", shouldExit
+		)
+
+		if shouldExit then
+			runtime.Route = chooseExitRoute(myRoot.Position, targetPosition, params)
+			runtime.RouteIndex = 1
+			runtime.ExitStartedAt = now
+			runtime.ExitAttempts = 1
+			runtime.DoorNoUnstuckUntil = now + doorOpenGrace
+			setState("EXIT", "spawn dentro")
+		elseif now - runtime.SpawnedAt >= spawnGraceTime then
+			runtime.ExitedThisSpawn = true
+			setState("CHASE", "spawn libre")
+		end
+	end
+
+	if runtime.State == "EXIT" then
+		if not runtime.Route then
+			runtime.Route = chooseExitRoute(myRoot.Position, targetPosition, params)
+			runtime.RouteIndex = 1
+			runtime.ExitStartedAt = now
+			runtime.ExitAttempts = runtime.ExitAttempts + 1
+			runtime.DoorNoUnstuckUntil = now + doorOpenGrace
+		end
+
+		if now - runtime.ExitStartedAt > exitTimeout then
+			if runtime.Route and runtime.Route.door then
+				runtime.BadDoors[runtime.Route.door] = now + badDoorCooldown
+			end
+
+			if runtime.ExitAttempts >= maxExitAttempts then
+				finishExit("timeout salida")
+				return
+			end
+
+			runtime.Route = chooseExitRoute(myRoot.Position, targetPosition, params)
+			runtime.RouteIndex = 1
+			runtime.ExitStartedAt = now
+			runtime.ExitAttempts = runtime.ExitAttempts + 1
+			runtime.DoorNoUnstuckUntil = now + doorOpenGrace
+		end
+
+		local goal = runtime.Route.points[runtime.RouteIndex]
+
+		if not goal then
+			finishExit("ruta terminada")
+			return
+		end
+
+		local doorPushMode = runtime.Route.kind == "door" and runtime.RouteIndex <= 3
+
+		if doorPushMode then
+			runtime.DoorNoUnstuckUntil = now + 0.9
+			fireProximityPrompts(runtime.Route.door, myRoot)
+		end
+
+		gyro.MaxTorque = Vector3.new(0, 0, 0) 
+		humanoid.WalkSpeed = 24 
+		humanoid:MoveTo(goal)
+		
+		runtime.CurrentVelocity = myRoot.AssemblyLinearVelocity 
+
+		local flatPos = Vector3.new(myRoot.Position.X, 0, myRoot.Position.Z)
+		local flatGoal = Vector3.new(goal.X, 0, goal.Z)
+		
+		if (flatGoal - flatPos).Magnitude < 3.5 then
+			runtime.RouteIndex = runtime.RouteIndex + 1
+		end
+
+		if runtime.RouteIndex > #runtime.Route.points then
+			finishExit("salio por ruta")
+		end
+
+	elseif runtime.State == "UNSTUCK" then
+		gyro.MaxTorque = Vector3.new(0, math.huge, 0) 
+		
+		local moveDir = runtime.UnstuckDir + Vector3.new(0, 0.7, 0)
+		local unit, mag = safeUnit(moveDir)
+
+		if mag > 0.05 then
+			applyVelocity(myRoot, unit * velocidadSalida, dt, true)
+			facePosition(gyro, myRoot, myRoot.Position + unit * 20)
+		end
+
+		if now >= runtime.UnstuckUntil then
+			setState("CHASE", "destrabado")
+		end
+		
+	elseif runtime.State == "CHASE" then
+		statusLog("Estado:", runtime.State, "persiguiendo:", targetName)
+		
+		gyro.MaxTorque = Vector3.new(0, math.huge, 0) 
+
+		local reached = moveToGoal(
+			myRoot,
+			gyro,
+			targetPosition,
+			velocidad,
+			true,
+			true,
+			nil,
+			false,
+			params,
+			dt
+		)
+
+		if reached then
+			applyVelocity(myRoot, ZERO, dt, false)
+		end
+	end
+
+	if runtime.LastPosition then
+		local moved = (myRoot.Position - runtime.LastPosition).Magnitude
+		local expected = 0
+		
+		if runtime.State == "EXIT" then
+			expected = humanoid.WalkSpeed * dt
+		else
+			expected = runtime.CurrentVelocity.Magnitude * dt
+		end
+
+		if runtime.State == "EXIT" and now < runtime.DoorNoUnstuckUntil then
+			runtime.StuckTime = 0
+			runtime.LastPosition = myRoot.Position
+			return
+		end
+
+		if expected > 0.5 and moved < expected * 0.12 then
+			runtime.StuckTime = runtime.StuckTime + dt
+		else
+			runtime.StuckTime = 0
+		end
+
+		if runtime.StuckTime >= stuckSeconds then
+			runtime.StuckTime = 0
+
+			if runtime.State == "EXIT" then
+				if runtime.Route and runtime.Route.door then
+					runtime.BadDoors[runtime.Route.door] = now + badDoorCooldown
+				end
+
+				if runtime.RouteIndex >= 3 then
+					finishExit("atasco despues de puerta")
+				else
+					runtime.Route = chooseExitRoute(myRoot.Position, targetPosition, params)
+					runtime.RouteIndex = 1
+					runtime.ExitStartedAt = now
+					runtime.ExitAttempts = runtime.ExitAttempts + 1
+					runtime.DoorNoUnstuckUntil = now + doorOpenGrace
+				end
+			else
+				startUnstuck(myRoot, targetPosition, params, "atascado")
+			end
+		end
+	end
+
+	runtime.LastPosition = myRoot.Position
+end))
+
+task.defer(function()
+	local started = os.clock()
+
+	while runtime.Alive and os.clock() - started < 15 do
+		local _, _, root = getCharacterParts()
+
+		if root then
+			cleanupRootObjects(root)
+			break
+		end
+
+		task.wait(0.25)
+	end
+end)
+
+resetSession("initial_start")
+log("Script activo. Objetivo:", targetName)
