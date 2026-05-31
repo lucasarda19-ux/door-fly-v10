@@ -5,7 +5,7 @@ repeat task.wait() until game:IsLoaded()
 ----------------------------------------------------
 local targetName = "Ghostly_x01"
 
-local velocidad = 80
+local velocidad = 200
 local velocidadSalida = 95
 local suavizado = 0.18
 
