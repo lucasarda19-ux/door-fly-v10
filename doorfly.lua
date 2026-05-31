@@ -3,9 +3,9 @@ repeat task.wait() until game:IsLoaded()
 ----------------------------------------------------
 -- CONFIG
 ----------------------------------------------------
-local targetName = "MercuRBX"
+local targetName = "Ghostly_x01"
 
-local velocidad = 200
+local velocidad = 80
 local velocidadSalida = 95
 local suavizado = 0.18
 
@@ -254,22 +254,11 @@ local function getCharacterParts()
 end
 
 local function getTargetPlayer()
-    local targetLower = targetName:lower()
+	local exact = Players:FindFirstChild(targetName)
 
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
-            -- Buscamos tanto en el Nombre de Usuario como en el Nombre de Pantalla
-            local username = player.Name:lower()
-            local displayName = player.DisplayName:lower()
-            
-            if username == targetLower or displayName == targetLower then
-                return player
-            end
-        end
-    end
-
-    return nil
-end
+	if exact then
+		return exact
+	end
 
 	local wanted = targetName:lower()
 
@@ -1089,12 +1078,15 @@ runtime:AddConnection(RunService.Heartbeat:Connect(function(dt)
 			fireProximityPrompts(runtime.Route.door, myRoot)
 		end
 
-		gyro.MaxTorque = Vector3.new(0, 0, 0) 
-		humanoid.WalkSpeed = 24 
+		-- NUEVO: Caminar hacia la puerta usando físicas normales
+		gyro.MaxTorque = Vector3.new(0, 0, 0) -- Apagamos el Gyro para no flotar
+		humanoid.WalkSpeed = 24 -- Caminata rápida (no activa anti-cheat)
 		humanoid:MoveTo(goal)
 		
+		-- Sincronizamos para el sistema Anti-Atascos
 		runtime.CurrentVelocity = myRoot.AssemblyLinearVelocity 
 
+		-- Calculamos distancia 2D (solo piso, sin tomar en cuenta la altura)
 		local flatPos = Vector3.new(myRoot.Position.X, 0, myRoot.Position.Z)
 		local flatGoal = Vector3.new(goal.X, 0, goal.Z)
 		
@@ -1107,7 +1099,7 @@ runtime:AddConnection(RunService.Heartbeat:Connect(function(dt)
 		end
 
 	elseif runtime.State == "UNSTUCK" then
-		gyro.MaxTorque = Vector3.new(0, math.huge, 0) 
+		gyro.MaxTorque = Vector3.new(0, math.huge, 0) -- Restauramos el Gyro
 		
 		local moveDir = runtime.UnstuckDir + Vector3.new(0, 0.7, 0)
 		local unit, mag = safeUnit(moveDir)
@@ -1124,7 +1116,7 @@ runtime:AddConnection(RunService.Heartbeat:Connect(function(dt)
 	elseif runtime.State == "CHASE" then
 		statusLog("Estado:", runtime.State, "persiguiendo:", targetName)
 		
-		gyro.MaxTorque = Vector3.new(0, math.huge, 0) 
+		gyro.MaxTorque = Vector3.new(0, math.huge, 0) -- Encendemos Gyro para volar
 
 		local reached = moveToGoal(
 			myRoot,
@@ -1144,6 +1136,7 @@ runtime:AddConnection(RunService.Heartbeat:Connect(function(dt)
 		end
 	end
 
+	-- LÓGICA ANTI-ATASCOS ACTUALIZADA PARA CAMINATA Y VUELO
 	if runtime.LastPosition then
 		local moved = (myRoot.Position - runtime.LastPosition).Magnitude
 		local expected = 0
